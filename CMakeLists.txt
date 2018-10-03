@@ -18,6 +18,12 @@ install(FILES include/cnmem.h DESTINATION include)
 # Add the tests.
 if(WITH_TESTS)
 
+  set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/Modules/" ${CMAKE_MODULE_PATH})
+  message(STATUS "CMAKE_MODULE_PATH:" "${CMAKE_MODULE_PATH}")
+
+  # Include custom modules (see cmake directory)
+  include(ConfigureGoogleTest)
+
   # Get Google tests.
   find_package(GTest QUIET REQUIRED)
   include_directories(${GTEST_INCLUDE_DIRS})
