@@ -635,6 +635,28 @@ TEST_F(CnmemTest, allocateAndReserveStreamDifferentSizes) {
     fclose(file);
 }
 
+TEST_F(CnmemTest, allocationOffset) {
+    cnmemDevice_t device;
+    memset(&device, 0, sizeof(device));
+    device.size = 2048;
+    ASSERT_EQ(CNMEM_STATUS_SUCCESS, cnmemInit(1, &device, CNMEM_FLAGS_DEFAULT));
+
+    void *ptr1, *ptr2;
+    ASSERT_EQ(CNMEM_STATUS_SUCCESS, cnmemMalloc(&ptr1, 512, NULL));
+    ASSERT_NE((void*) NULL, ptr1);
+    ASSERT_EQ(CNMEM_STATUS_SUCCESS, cnmemMalloc(&ptr2, 512, NULL));
+    ASSERT_NE((void*) NULL, ptr2);
+
+    ptrdiff_t offset = -1;
+    ASSERT_EQ(CNMEM_STATUS_SUCCESS, cnmemAllocationOffset(&offset, ptr1, NULL));
+    ASSERT_GE(offset, 0);
+    ASSERT_EQ(CNMEM_STATUS_SUCCESS, cnmemAllocationOffset(&offset, ptr2, NULL));
+    ASSERT_GE(offset, 0);
+
+    ASSERT_EQ(CNMEM_STATUS_SUCCESS, cnmemFree(ptr1, NULL));
+    ASSERT_EQ(CNMEM_STATUS_SUCCESS, cnmemFree(ptr2, NULL));
+}
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 #ifdef USE_CPP_11

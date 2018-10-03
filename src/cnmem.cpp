@@ -266,15 +266,18 @@ class Block {
     std::size_t mSize;
     /// The prev/next blocks in the linked list of blocks.
     Block *mNext;
+    /// The head node from which this Block was created.
+    Block *mHead;
     /// Is it a head node (i.e. a node obtained from parent->allocate or cudaMalloc).
     bool mIsHead;
 
 public:
     /// Create a block.
-    Block(char *data, std::size_t size, Block *next, bool isHead)
+    Block(char *data, std::size_t size, Block *next, Block *head, bool isHead)
         : mData(data)
         , mSize(size)
         , mNext(next)
+        , mHead(isHead ? this : head)
         , mIsHead(isHead) {
     }
     
@@ -290,6 +293,9 @@ public:
     inline const Block* getNext() const { return mNext; }
     /// The next block in the linked list (mutable).
     inline Block* getNext() { return mNext; }
+
+    /// The head node from which this block was created.
+    inline Block* getHead() { return mHead; }
     
     /// Is it a head block.
     inline bool isHead() const { return mIsHead; }
@@ -343,6 +349,9 @@ public:
     cnmemStatus_t reserve(std::size_t size);
     /// Steal memory from another manager.
     cnmemStatus_t stealUnsafe(void *&ptr, std::size_t size);
+
+    /// Find head pointer for the given pointer.
+    cnmemStatus_t findHead(void *&head, void *ptr);
 
     /// Print the full memory state.
     cnmemStatus_t printMemoryState(FILE *file) const;
@@ -521,7 +530,7 @@ cnmemStatus_t Manager::allocateBlockUnsafe(Block *&curr, Block *&prev, std::size
     for( ; next && next->getData() < data ; next = next->getNext() ) {
         prev = next;
     }
-    curr = new Block((char*) data, size, next, true);
+    curr = new Block((char*) data, size, next, 0, true);
     if( !curr ) {
         return CNMEM_STATUS_OUT_OF_MEMORY;
     }
@@ -545,7 +554,7 @@ cnmemStatus_t Manager::extractBlockUnsafe(Block *curr, Block *prev, std::size_t 
     }
     else {
         std::size_t remaining = curr->getSize()-size;
-        Block *newBlock = new Block(curr->getData() + size, remaining, curr->getNext(), stolen);
+        Block *newBlock = new Block(curr->getData() + size, remaining, curr->getNext(), curr, stolen);
         if( !newBlock ) {
             return CNMEM_STATUS_OUT_OF_MEMORY;
         }
@@ -870,7 +879,7 @@ cnmemStatus_t Manager::stealUnsafe(void *&stolen, std::size_t size) {
     }
 
     // Push the block in the used list.
-    mUsedBlocks = new Block((char*) data, dataSize, mUsedBlocks, true);
+    mUsedBlocks = new Block((char*) data, dataSize, mUsedBlocks, 0, true);
     if( !mUsedBlocks ) {
         return CNMEM_STATUS_OUT_OF_MEMORY;
     }
@@ -879,6 +888,37 @@ cnmemStatus_t Manager::stealUnsafe(void *&stolen, std::size_t size) {
     stolen = data;
     return CNMEM_STATUS_SUCCESS;
 }
+
+cnmemStatus_t Manager::findHead(void *&head, void *ptr) {
+    // Skip if ptr is NULL.
+    if( ptr == NULL ) {
+        return CNMEM_STATUS_SUCCESS;
+    }
+        
+    // Lock to make sure only one thread execute that fragment of code.
+    CNMEM_CHECK(mMutex.lock());
+    
+    // Find the node in the list of used blocks.
+    Block *curr = mUsedBlocks, *prev = NULL;
+    for( ; curr && curr->getData() != ptr ; curr = curr->getNext() ) {
+        prev = curr;
+    }
+    
+    // Make sure we have found a node.
+    if( curr == NULL ) {
+        CNMEM_CHECK(mMutex.unlock());
+        return CNMEM_STATUS_INVALID_ARGUMENT;
+    }
+
+    // We have the node so get its head's data ptr
+    head = curr->getHead()->getData();
+
+    CNMEM_ASSERT(nullptr != head);
+    
+    CNMEM_CHECK(mMutex.unlock());
+    return CNMEM_STATUS_SUCCESS;
+}
+
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -931,7 +971,7 @@ cnmemStatus_t Manager::stealBlockUnsafe(void *&data, std::size_t &dataSize, ::si
     }
     else {
         curr->setSize(sizeBefore);
-        Block *block = new Block((char*) data, dataSize, next, false);
+        Block *block = new Block((char*) data, dataSize, next, curr->getHead(), false);
         if( !block ) {
             return CNMEM_STATUS_OUT_OF_MEMORY;
         }
@@ -944,7 +984,7 @@ cnmemStatus_t Manager::stealBlockUnsafe(void *&data, std::size_t &dataSize, ::si
     
     // We have space at the end so we may need to add a new node.
     if( sizeAfter > 0 ) {
-        Block *block = new Block(curr->getData() + curr->getSize(), sizeAfter, next, false);
+        Block *block = new Block(curr->getData() + curr->getSize(), sizeAfter, next, curr->getHead(), false);
         if( !block ) {
             return CNMEM_STATUS_OUT_OF_MEMORY;
         }
@@ -1253,6 +1293,35 @@ cnmemStatus_t cnmemFree(void *ptr, cudaStream_t stream) {
     }
     CNMEM_ASSERT(manager);
     return manager->release(ptr);
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+cnmemStatus_t CNMEM_API cnmemAllocationOffset(ptrdiff_t *offset, void *ptr, cudaStream_t stream)
+{
+    CNMEM_CHECK_TRUE(cnmem::Context::check(), CNMEM_STATUS_NOT_INITIALIZED);
+    if( nullptr == ptr || nullptr == offset) {
+        return CNMEM_STATUS_INVALID_ARGUMENT;
+    }
+
+    int device;
+    CNMEM_CHECK_CUDA(cudaGetDevice(&device));
+    cnmem::Manager &root = cnmem::Context::get()->getManager(device);
+    cnmem::Manager *manager = &root;
+    if( stream ) {
+        CNMEM_CHECK(root.getChildFromStream(manager, stream));
+    }
+    CNMEM_ASSERT(manager);
+
+    void *head = (void*)0xffffffff;
+    // Find the head allocation for this ptr
+    CNMEM_CHECK(manager->findHead(head, ptr));
+
+    // calculate offset from head to ptr
+    *offset = (ptrdiff_t*)ptr - (ptrdiff_t*)head;
+    //printf("head: %p, ptr: %p, offset: %p\n", head, ptr, (void*)*offset);
+
+    return CNMEM_STATUS_SUCCESS;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////

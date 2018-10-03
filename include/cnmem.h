@@ -216,6 +216,23 @@ cnmemStatus_t CNMEM_API cnmemMalloc(void **ptr, size_t size, cudaStream_t stream
  */
 cnmemStatus_t CNMEM_API cnmemFree(void *ptr, cudaStream_t stream);
 
+/**
+ * \brief  Get the offset of ptr from its base allocation.
+ * 
+ * This offset is the difference between the address stored in ptr and the 
+ * base device memory allocation that it is a sub-allocation of within the pool. 
+ * This is useful for, e.g. IPC, where cudaIpcOpenMemHandle() returns a pointer 
+ * to the base  * allocation, so the user needs the offset of the sub-allocation
+ * in order to correctly access its data. It is thread safe.
+ * 
+ * \return 
+ * CNMEM_STATUS_SUCCESS,          if everything goes fine,
+ * CNMEM_STATUS_NOT_INITIALIZED,  if the ::cnmemInit function has not been called,
+ * CNMEM_STATUS_INVALID_ARGUMENT, if one of the argument is invalid. For example, ptr == 0,
+ * CNMEM_STATUS_CUDA_ERROR,       if an error happens in one of the CUDA functions.
+ */
+cnmemStatus_t CNMEM_API cnmemAllocationOffset(ptrdiff_t *offset, void *ptr, cudaStream_t stream);
+
 /* ********************************************************************************************* */
 /* Utility functions.                                                                            */
 /* ********************************************************************************************* */
